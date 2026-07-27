@@ -25,7 +25,7 @@ export default function SignupPage() {
     setLoading(false);
 
     if (error) {
-      setError("تعذّر إنشاء الحساب. تأكد أن كلمة المرور 6 أحرف على الأقل.");
+      setError(`تعذّر إنشاء الحساب: ${error.message}`);
       return;
     }
 
