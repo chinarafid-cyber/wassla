@@ -1,0 +1,135 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  VISITOR
+  CUSTOMER
+  MERCHANT
+  ADMIN
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+
+  @@map("user_status")
+}
+
+enum OtpPurpose {
+  REGISTER
+  LOGIN
+  PHONE_CHANGE
+
+  @@map("otp_purpose")
+}
+
+enum AuditAction {
+  OTP_REQUESTED
+  OTP_VERIFIED
+  OTP_FAILED
+  OTP_RATE_LIMITED
+  USER_REGISTERED
+  USER_LOGIN
+  USER_LOGOUT
+  SESSION_REFRESHED
+  SESSION_REVOKED
+  PROFILE_COMPLETED
+  PROFILE_UPDATED
+  ROLE_CHANGED
+
+  @@map("audit_action")
+}
+
+/// A registered account. Created only after a phone number is OTP-verified
+/// for the first time (see OtpPurpose.REGISTER) — there is no
+/// username/password signup path.
+model User {
+  id                 String     @id @default(cuid())
+  phone              String     @unique
+  phoneVerifiedAt    DateTime
+  email              String?    @unique
+  emailVerifiedAt    DateTime?
+  fullName           String?
+  role               UserRole   @default(CUSTOMER)
+  status             UserStatus @default(ACTIVE)
+  profileCompletedAt DateTime?
+  createdAt          DateTime   @default(now())
+  updatedAt          DateTime   @updatedAt
+
+  otps      Otp[]
+  sessions  Session[]
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+/// A single OTP challenge. `codeHash` is a bcrypt hash of the 6-digit code —
+/// the plaintext code is never persisted. Rows are kept after consumption
+/// for audit/rate-limit history rather than deleted.
+model Otp {
+  id          String     @id @default(cuid())
+  phone       String
+  codeHash    String
+  purpose     OtpPurpose
+  attempts    Int        @default(0)
+  maxAttempts Int        @default(5)
+  expiresAt   DateTime
+  consumedAt  DateTime?
+  requestIp   String?
+  createdAt   DateTime   @default(now())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([phone, purpose, createdAt])
+  @@map("otps")
+}
+
+/// A refresh-token session. Access tokens are short-lived JWTs verified
+/// stateless; only the long-lived refresh token is tracked here so it can
+/// be individually revoked (logout, "log out of all devices", admin action).
+model Session {
+  id               String    @id @default(cuid())
+  refreshTokenHash String    @unique
+  userAgent        String?
+  deviceName       String?
+  ipAddress        String?
+  expiresAt        DateTime
+  revokedAt        DateTime?
+  lastUsedAt       DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+/// Append-only security/audit trail. `metadata` holds action-specific,
+/// non-sensitive context (e.g. which fields changed) — never tokens or OTP
+/// codes.
+model AuditLog {
+  id        String      @id @default(cuid())
+  action    AuditAction
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action, createdAt])
+  @@map("audit_logs")
+}

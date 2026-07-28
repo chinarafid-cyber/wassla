@@ -1,0 +1,95 @@
+name: wassla
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: wassla-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wassla}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-wassla}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-wassla} -d ${POSTGRES_DB:-wassla}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - wassla-network
+
+  redis:
+    image: redis:8-alpine
+    container_name: wassla-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD is required in .env}
+      --appendonly yes
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "--no-auth-warning", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - wassla-network
+
+  # One-off job: `docker compose run --rm migrate` applies pending Prisma
+  # migrations. Kept separate from `app` so scaling app replicas never races
+  # multiple containers trying to migrate the schema at once.
+  migrate:
+    build:
+      context: .
+      target: builder
+    container_name: wassla-migrate
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-wassla}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wassla}?schema=public
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - wassla-network
+
+  # Full production-style app container. Local development normally runs
+  # only `postgres` + `redis` here and `npm run dev` on the host for hot
+  # reload; start this with `docker compose --profile full up` to run the
+  # whole stack in containers instead.
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wassla-app
+    restart: unless-stopped
+    profiles: ["full"]
+    env_file:
+      - .env.local
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-wassla}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-wassla}?schema=public
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - wassla-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  wassla-network:
+    driver: bridge
